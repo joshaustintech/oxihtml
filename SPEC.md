@@ -36,7 +36,7 @@ Stop condition:
 - Runner exits non-zero on failures and prints top N failing cases with file + case index.
 
 ### Milestone 1 — Fixture parsers (std-only)
-Status: INCOMPLETE
+Status: COMPLETE
 Scope:
 - Parse tree-construction `.dat` files (sections `#data`, `#errors`, `#document`, `#document-fragment`, `#script-on/off`, `#document-fragment <ctx>`).
 - Parse tokenizer/serializer `.test` JSON files using a minimal JSON parser (objects, arrays, strings with escapes, numbers, booleans, null).

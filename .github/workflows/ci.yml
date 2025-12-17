@@ -12,3 +12,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build + unit tests
         run: cargo test --locked
+      - name: Fixture smoke (html5lib-tests)
+        run: |
+          git clone --depth 1 https://github.com/html5lib/html5lib-tests.git html5lib-tests
+          cargo run --quiet --bin html5lib-runner -- --smoke --all --tests ./html5lib-tests

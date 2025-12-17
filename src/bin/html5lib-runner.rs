@@ -18,11 +18,27 @@ struct Config {
     mode_tokenizer: bool,
     mode_serializer: bool,
     list_only: bool,
+    list_cases: bool,
+    show: Option<ShowSpec>,
     smoke: bool,
     threads: usize,
     max_failures: usize,
     fail_fast: bool,
     filter: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+enum ShowSuite {
+    Tree,
+    Tokenizer,
+    Serializer,
+}
+
+#[derive(Clone, Debug)]
+struct ShowSpec {
+    suite: ShowSuite,
+    file: PathBuf,
+    case_index: usize,
 }
 
 fn expand_tilde(path: &str) -> PathBuf {
@@ -40,6 +56,8 @@ fn parse_args() -> Result<Config, String> {
     let mut mode_tokenizer = false;
     let mut mode_serializer = false;
     let mut list_only = false;
+    let mut list_cases = false;
+    let mut show: Option<ShowSpec> = None;
     let mut smoke = false;
     let mut threads = None::<usize>;
     let mut max_failures = 20usize;
@@ -62,6 +80,23 @@ fn parse_args() -> Result<Config, String> {
                 mode_serializer = true;
             }
             "--list" => list_only = true,
+            "--list-cases" => list_cases = true,
+            "--show" => {
+                let suite = args.next().ok_or("--show needs a suite (tree|tokenizer|serializer)")?;
+                let file = args.next().ok_or("--show needs a file path")?;
+                let idx = args.next().ok_or("--show needs a case index")?;
+                let suite = match suite.as_str() {
+                    "tree" => ShowSuite::Tree,
+                    "tokenizer" => ShowSuite::Tokenizer,
+                    "serializer" => ShowSuite::Serializer,
+                    _ => return Err("--show suite must be tree|tokenizer|serializer".to_string()),
+                };
+                show = Some(ShowSpec {
+                    suite,
+                    file: PathBuf::from(file),
+                    case_index: idx.parse::<usize>().map_err(|_| "invalid --show case index")?,
+                });
+            }
             "--smoke" => smoke = true,
             "--threads" => {
                 let n = args.next().ok_or("--threads needs a number")?;
@@ -77,7 +112,7 @@ fn parse_args() -> Result<Config, String> {
             }
             "--help" | "-h" => {
                 return Err(
-                    "Usage: html5lib-runner --tests ~/html5lib-tests [--tree|--tokenizer|--serializer|--all] [--list] [--smoke] [--threads N] [--max-failures N] [--fail-fast] [--filter SUBSTR]"
+                    "Usage: html5lib-runner --tests ~/html5lib-tests [--tree|--tokenizer|--serializer|--all] [--list] [--list-cases] [--show tree|tokenizer|serializer <file> <case_index>] [--smoke] [--threads N] [--max-failures N] [--fail-fast] [--filter SUBSTR]"
                         .to_string(),
                 );
             }
@@ -102,6 +137,8 @@ fn parse_args() -> Result<Config, String> {
         mode_tokenizer,
         mode_serializer,
         list_only,
+        list_cases,
+        show,
         smoke,
         threads: threads.max(1),
         max_failures: max_failures.max(1),
@@ -436,6 +473,104 @@ fn run_serializer_suite(config: &Config) -> Summary {
     summary
 }
 
+fn list_cases(config: &Config) -> std::process::ExitCode {
+    let tree_files = match discover_tree_construction_files(&config.tests_root) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("failed to discover tree-construction files: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let tok_files = match discover_tokenizer_files(&config.tests_root) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("failed to discover tokenizer files: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let ser_files = match discover_serializer_files(&config.tests_root) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("failed to discover serializer files: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    println!("tree-construction:");
+    for path in tree_files {
+        let rel = path.strip_prefix(&config.tests_root).unwrap_or(&path);
+        match parse_tree_construction_dat(&path) {
+            Ok(cases) => println!("  {}: {} cases", rel.display(), cases.len()),
+            Err(e) => println!("  {}: (error: {e})", rel.display()),
+        }
+    }
+
+    println!("tokenizer:");
+    for path in tok_files {
+        let rel = path.strip_prefix(&config.tests_root).unwrap_or(&path);
+        let count = match parse_json_file(&path) {
+            Ok(Ok(Json::Object(obj))) => match json_obj_get(&obj, "tests") {
+                Some(Json::Array(arr)) => arr.len(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        println!("  {}: {} tests", rel.display(), count);
+    }
+
+    println!("serializer:");
+    for path in ser_files {
+        let rel = path.strip_prefix(&config.tests_root).unwrap_or(&path);
+        let count = match parse_json_file(&path) {
+            Ok(Ok(Json::Object(obj))) => match json_obj_get(&obj, "tests") {
+                Some(Json::Array(arr)) => arr.len(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        println!("  {}: {} tests", rel.display(), count);
+    }
+    std::process::ExitCode::SUCCESS
+}
+
+fn show_case(config: &Config, show: &ShowSpec) -> std::process::ExitCode {
+    match show.suite {
+        ShowSuite::Tree => {
+            let path = if show.file.is_absolute() {
+                show.file.clone()
+            } else {
+                config.tests_root.join(&show.file)
+            };
+            let cases = match parse_tree_construction_dat(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("failed to parse {}: {e}", path.display());
+                    return std::process::ExitCode::from(2);
+                }
+            };
+            let Some(case) = cases.get(show.case_index) else {
+                eprintln!("case index out of range ({} cases)", cases.len());
+                return std::process::ExitCode::from(2);
+            };
+
+            println!("file: {}", show.file.display());
+            println!("case: {}", show.case_index);
+            println!("script: {:?}", case.script_directive);
+            if let Some(ctx) = &case.fragment_context {
+                println!("fragment: ns={:?} tag={}", ctx.namespace, ctx.tag_name);
+            } else {
+                println!("fragment: (none)");
+            }
+            println!("\n#data\n{}\n\n#document\n{}", case.data, case.expected);
+            std::process::ExitCode::SUCCESS
+        }
+        ShowSuite::Tokenizer | ShowSuite::Serializer => {
+            eprintln!("--show is currently implemented for suite 'tree' only");
+            std::process::ExitCode::from(2)
+        }
+    }
+}
+
 fn main() -> std::process::ExitCode {
     let config = match parse_args() {
         Ok(c) => c,
@@ -444,6 +579,10 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
+
+    if let Some(show) = &config.show {
+        return show_case(&config, show);
+    }
 
     if (config.mode_tokenizer || config.mode_serializer) && !config.list_only && !config.smoke {
         eprintln!("note: tokenizer/serializer execution is not implemented yet; use --smoke to validate fixture parsing");
@@ -551,6 +690,10 @@ fn main() -> std::process::ExitCode {
             println!("serializer files: {}", ser.len());
         }
         return std::process::ExitCode::SUCCESS;
+    }
+
+    if config.list_cases {
+        return list_cases(&config);
     }
 
     let mut all = Summary::default();
