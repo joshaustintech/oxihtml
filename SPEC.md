@@ -50,7 +50,7 @@ Stop condition:
 - A `--smoke` run completes across all fixtures without panics.
 
 ### Milestone 2 — DOM + html5lib serialization
-Status: INCOMPLETE
+Status: COMPLETE
 Scope:
 - Implement arena-based DOM (`dom.rs`) and `serialize::to_test_format` matching html5lib tree format.
 - Implement minimal constructors used by the tree builder (append child, insert before, detach, etc.).
